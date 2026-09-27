@@ -98,6 +98,16 @@ def parse_timestamp(text):
     return None
 
 
+def format_seconds(total):
+    """Converte segundos em 'M:SS' ou 'H:MM:SS' para mensagens amigáveis."""
+    total = int(round(total))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
 class WorkerProcess(QThread):
     progress = pyqtSignal(int)
     finished = pyqtSignal(str) 
@@ -123,6 +133,19 @@ class WorkerProcess(QThread):
                 self.progress.emit(percent)
         elif d['status'] == 'finished':
             self.progress.emit(99)
+
+    def _probe_duration(self, js_runtime):
+        """Consulta só os metadados (sem baixar) para saber a duração do vídeo."""
+        probe_opts = {'quiet': True, 'noplaylist': True, 'skip_download': True}
+        if js_runtime:
+            probe_opts['js_runtimes'] = js_runtime
+            probe_opts['remote_components'] = ['ejs:github']
+        try:
+            with yt_dlp.YoutubeDL(probe_opts) as probe:
+                info = probe.extract_info(self.url, download=False)
+            return info.get('duration')
+        except Exception:
+            return None
 
     def run(self):
         try:
@@ -186,6 +209,18 @@ class WorkerProcess(QThread):
 
             # --- TRECHO ESPECÍFICO (corte por tempo) ---
             if self.section_start is not None and self.section_end is not None:
+                # Sem isso, um Início/Fim além da duração real do vídeo faz o
+                # ffmpeg travar com um código de erro sem sentido.
+                duration = self._probe_duration(js_runtime)
+                if duration:
+                    if self.section_start >= duration:
+                        raise ValueError(
+                            f"O tempo de início ({format_seconds(self.section_start)}) é maior "
+                            f"que a duração do vídeo ({format_seconds(duration)})."
+                        )
+                    if self.section_end > duration:
+                        self.section_end = duration
+
                 opts['download_ranges'] = download_range_func(
                     None, [(self.section_start, self.section_end)]
                 )
